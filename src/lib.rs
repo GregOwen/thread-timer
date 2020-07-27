@@ -40,6 +40,8 @@ pub struct ThreadTimer {
 impl Timer for ThreadTimer {
     fn new() -> Self {
 	let (sender, receiver) = mpsc::channel::<StartWaitMessage>();
+	let is_waiting = Arc::new(Mutex::new(false));
+	let thread_is_waiting = is_waiting.clone();
 
 	thread::spawn(move || {
 	    loop {
@@ -49,6 +51,8 @@ impl Timer for ThreadTimer {
 			msg.responder.send(true).unwrap();
 			thread::sleep(msg.dur);
 			(msg.f)();
+			// Indicate that we're ready to wait again
+			*thread_is_waiting.lock().unwrap() = false;
 		    },
 		    // If the sender has disconnected, break out of the loop
 		    Err(_) => break,
@@ -58,7 +62,7 @@ impl Timer for ThreadTimer {
 
 	ThreadTimer {
 	    op_lock: Arc::new(Mutex::new(())),
-	    is_waiting: Arc::new(Mutex::new(false)),
+	    is_waiting,
 	    sender,
 	}
     }
@@ -66,11 +70,11 @@ impl Timer for ThreadTimer {
     fn start<F>(&self, dur: Duration, f: F) -> Result<(), TimerStartError>
     where F: FnOnce() + Send + 'static {
 	let _guard = self.op_lock.lock().unwrap();
-	let mut is_waiting = *self.is_waiting.lock().unwrap();
-	if is_waiting {
+	let mut is_waiting = self.is_waiting.lock().unwrap();
+	if *is_waiting {
 	    return Err(TimerStartError::AlreadyWaiting);
 	}
-	is_waiting = true;
+	*is_waiting = true;
 	let (responder, receiver) = mpsc::channel();
 	let msg = StartWaitMessage {
 	    dur,
