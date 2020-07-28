@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, TryLockError};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
@@ -8,6 +8,7 @@ pub enum TimerStartError {
     AlreadyWaiting,
 }
 
+#[derive(Debug, Eq, PartialEq)]
 pub enum TimerCancelError {
     NotWaiting,
 }
@@ -33,6 +34,9 @@ pub struct ThreadTimer {
     op_lock: Arc<Mutex<()>>,
     // Record whether or not the timer is currently waiting
     is_waiting: Arc<Mutex<bool>>,
+    // Used to wait for a cancelation signal and avoid spurious wakeups while waiting
+    is_canceled: Arc<(Mutex<bool>, Condvar)>,
+    // Used to tell the timer thread to start waiting
     sender: Sender<StartWaitMessage>,
 }
 
@@ -41,14 +45,27 @@ impl Timer for ThreadTimer {
 	let (sender, receiver) = mpsc::channel::<StartWaitMessage>();
 	let is_waiting = Arc::new(Mutex::new(false));
 	let thread_is_waiting = is_waiting.clone();
+	let is_canceled = Arc::new((Mutex::new(false), Condvar::new()));
+	let thread_is_canceled = is_canceled.clone();
 
 	thread::spawn(move || {
 	    loop {
 		match receiver.recv() {
 		    Ok(msg) => {
-			thread::sleep(msg.dur);
-			(msg.f)();
-			// Indicate that we're ready to wait again
+			let (cancel_lock, cancel_condvar) = &*thread_is_canceled;
+			let (mut cancel_guard, cancel_res) = cancel_condvar.wait_timeout_while(
+			    cancel_lock.lock().unwrap(),
+			    msg.dur,
+			    |&mut is_canceled| !is_canceled,
+			).unwrap();
+			if cancel_res.timed_out() {
+			    // Only run the thunk if the wait completed (i.e. it
+			    // was not canceled)
+			    (msg.f)();
+			}
+			// Always clear the cancel guard (even if the wait
+			// completed and we executed the thunk)
+			*cancel_guard = false;
 			*thread_is_waiting.lock().unwrap() = false;
 		    },
 		    // If the sender has disconnected, break out of the loop
@@ -60,6 +77,7 @@ impl Timer for ThreadTimer {
 	ThreadTimer {
 	    op_lock: Arc::new(Mutex::new(())),
 	    is_waiting,
+	    is_canceled,
 	    sender,
 	}
     }
@@ -81,6 +99,33 @@ impl Timer for ThreadTimer {
     }
 
     fn cancel(&self) -> Result<(), TimerCancelError> {
-	Ok(())
+	let _guard = self.op_lock.lock().unwrap();
+	let is_waiting = self.is_waiting.lock().unwrap();
+	if !*is_waiting {
+	    return Err(TimerCancelError::NotWaiting);
+	}
+
+	let (cancel_lock, cancel_condvar) = &*self.is_canceled;
+
+	// This must be try_lock() not lock() in order to avoid a deadlock with
+	// the wait thread. At this point the client thread holds the wait
+	// lock. If the wait thread holds the cancel lock (if it has finished
+	// waiting and is running the task), then we will not be able to get the
+	// cancel lock here and the wait thread will not be able to get the wait
+	// lock to indicate that it has finished waiting.
+	match cancel_lock.try_lock() {
+	    // We were able to acquire the cancel lock, so cancel the wait
+	    Ok(mut cancel_guard) => {
+		*cancel_guard = true;
+		cancel_condvar.notify_one();
+		// We do not clear the cancel or waiting flags here since those
+		// are cleared in the wait thread
+		Ok(())
+	    },
+	    // The wait thread holds the cancel lock, so return an error
+	    // indicating that we were unable to cancel
+	    Err(TryLockError::WouldBlock) => Err(TimerCancelError::NotWaiting),
+	    Err(TryLockError::Poisoned(_)) => panic!("Cancel lock was poisoned"),
+	}
     }
 }
