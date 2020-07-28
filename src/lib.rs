@@ -25,7 +25,6 @@ pub trait Timer {
 struct StartWaitMessage {
     dur: Duration,
     f: Box<dyn FnOnce() + Send + 'static>,
-    responder: Sender<bool>,
 }
 
 /// Implementation of Timer that maintains a helper thread to wait for the requested duration.
@@ -47,8 +46,6 @@ impl Timer for ThreadTimer {
 	    loop {
 		match receiver.recv() {
 		    Ok(msg) => {
-			// Acknowledge that we've received the message and that we're starting to wait
-			msg.responder.send(true).unwrap();
 			thread::sleep(msg.dur);
 			(msg.f)();
 			// Indicate that we're ready to wait again
@@ -75,14 +72,11 @@ impl Timer for ThreadTimer {
 	    return Err(TimerStartError::AlreadyWaiting);
 	}
 	*is_waiting = true;
-	let (responder, receiver) = mpsc::channel();
 	let msg = StartWaitMessage {
 	    dur,
 	    f: Box::new(f),
-	    responder,
 	};
 	self.sender.send(msg).unwrap();
-	let _ack = receiver.recv().unwrap();
 	Ok(())
     }
 
