@@ -7,6 +7,7 @@ description = "A simple, cancelable timer with no external dependencies"
 license = "MIT"
 homepage = "https://github.com/GregOwen/thread-timer"
 repository = "https://github.com/GregOwen/thread-timer"
+documentation = "https://docs.rs/thread_timer"
 readme = "README.md"
 keywords = ["timer", "timeout", "delay", "cancel"]
 categories = ["asynchronous", "concurrency"]
