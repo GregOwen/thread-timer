@@ -1,15 +1,23 @@
+//! A simple, cancelable timer implementation with no external dependencies.
+
+#![deny(missing_docs)]
+
 use std::sync::{Arc, Condvar, Mutex, TryLockError};
 use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::Duration;
 
+/// Errors that may be thrown by ThreadTimer::start()
 #[derive(Debug, Eq, PartialEq)]
 pub enum TimerStartError {
+    /// The timer is already waiting to execute some other thunk
     AlreadyWaiting,
 }
 
+/// Errors that may be thrown by ThreadTimer::cancel()
 #[derive(Debug, Eq, PartialEq)]
 pub enum TimerCancelError {
+    /// The timer is not currently waiting, so there is nothing to cancel
     NotWaiting,
 }
 
@@ -32,6 +40,8 @@ pub struct ThreadTimer {
 }
 
 impl ThreadTimer {
+    /// Creates and returns a new ThreadTimer. Spawns a new thread to do the
+    /// waiting (the "wait thread").
     pub fn new() -> Self {
 	let (sender, receiver) = mpsc::channel::<StartWaitMessage>();
 	let is_waiting = Arc::new(Mutex::new(false));
@@ -73,6 +83,10 @@ impl ThreadTimer {
 	}
     }
 
+    /// Start waiting. Wait for `dur` to elapse then execute `f`. Will not
+    /// execute `f` if the timer is canceled before `dur` elapses.
+    /// Returns [TimerStartError](enum.TimerStartError.html)::AlreadyWaiting if
+    /// the timer is already waiting to execute a thunk.
     pub fn start<F>(&self, dur: Duration, f: F) -> Result<(), TimerStartError>
     where F: FnOnce() + Send + 'static {
 	let _guard = self.op_lock.lock().unwrap();
@@ -89,6 +103,10 @@ impl ThreadTimer {
 	Ok(())
     }
 
+    /// Cancel the current timer (the thunk will not be executed and the timer
+    /// will be able to start waiting to execute another thunk).
+    /// Returns [TimerCancelError](enum.TimerCancelError.html)::NotWaiting if
+    /// the timer is not currently waiting.
     pub fn cancel(&self) -> Result<(), TimerCancelError> {
 	let _guard = self.op_lock.lock().unwrap();
 	let is_waiting = self.is_waiting.lock().unwrap();
