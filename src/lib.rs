@@ -71,6 +71,7 @@ struct StartWaitMessage {
 /// thread::sleep(Duration::from_millis(60));
 /// assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
 /// ```
+#[derive(Clone)]
 pub struct ThreadTimer {
     // Allow only one operation at a time so that we don't need to worry about interleaving
     op_lock: Arc<Mutex<()>>,
@@ -230,5 +231,11 @@ impl ThreadTimer {
 	    Err(TryLockError::WouldBlock) => Err(TimerCancelError::NotWaiting),
 	    Err(TryLockError::Poisoned(_)) => panic!("Cancel lock was poisoned"),
 	}
+    }
+}
+
+impl Default for ThreadTimer {
+    fn default() -> Self {
+	Self::new()
     }
 }
