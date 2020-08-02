@@ -1,6 +1,6 @@
 [package]
 name = "thread_timer"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["GregOwen <greowen@gmail.com>"]
 edition = "2018"
 description = "A simple, cancelable timer with no external dependencies"
