@@ -13,22 +13,13 @@ pub enum TimerCancelError {
     NotWaiting,
 }
 
-pub trait Timer {
-    fn new() -> Self;
-
-    fn start<F>(&self, dur: Duration, f: F) -> Result<(), TimerStartError>
-    where F: FnOnce() + Send + 'static;
-
-    fn cancel(&self) -> Result<(), TimerCancelError>;
-}
-
 /// Message sent to tell the timer thread to start waiting
 struct StartWaitMessage {
     dur: Duration,
     f: Box<dyn FnOnce() + Send + 'static>,
 }
 
-/// Implementation of Timer that maintains a helper thread to wait for the requested duration.
+/// Timer that maintains a helper thread to wait for the requested duration
 pub struct ThreadTimer {
     // Allow only one operation at a time so that we don't need to worry about interleaving
     op_lock: Arc<Mutex<()>>,
@@ -40,8 +31,8 @@ pub struct ThreadTimer {
     sender: Sender<StartWaitMessage>,
 }
 
-impl Timer for ThreadTimer {
-    fn new() -> Self {
+impl ThreadTimer {
+    pub fn new() -> Self {
 	let (sender, receiver) = mpsc::channel::<StartWaitMessage>();
 	let is_waiting = Arc::new(Mutex::new(false));
 	let thread_is_waiting = is_waiting.clone();
@@ -82,7 +73,7 @@ impl Timer for ThreadTimer {
 	}
     }
 
-    fn start<F>(&self, dur: Duration, f: F) -> Result<(), TimerStartError>
+    pub fn start<F>(&self, dur: Duration, f: F) -> Result<(), TimerStartError>
     where F: FnOnce() + Send + 'static {
 	let _guard = self.op_lock.lock().unwrap();
 	let mut is_waiting = self.is_waiting.lock().unwrap();
@@ -98,7 +89,7 @@ impl Timer for ThreadTimer {
 	Ok(())
     }
 
-    fn cancel(&self) -> Result<(), TimerCancelError> {
+    pub fn cancel(&self) -> Result<(), TimerCancelError> {
 	let _guard = self.op_lock.lock().unwrap();
 	let is_waiting = self.is_waiting.lock().unwrap();
 	if !*is_waiting {
