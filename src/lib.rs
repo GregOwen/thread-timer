@@ -27,7 +27,31 @@ struct StartWaitMessage {
     f: Box<dyn FnOnce() + Send + 'static>,
 }
 
-/// Timer that maintains a helper thread to wait for the requested duration
+/// A simple, cancelable timer that can run a thunk after waiting for an
+/// arbitrary duration.
+///
+/// Waiting is accomplished by using a helper thread (the "wait thread") that
+/// listens for incoming wait requests and then executes the requested thunk
+/// after blocking for the requested duration. Because each ThreadTimer keeps
+/// only one wait thread, each ThreadTimer may only be waiting for a single
+/// thunk at a time.
+///
+/// If a ThreadTimer is currently waiting to execute a thunk, the wait can be
+/// canceled, in which case the thunk will not be run.
+/// ```
+/// use std::sync::mpsc::{self, TryRecvError};
+/// use std::thread;
+/// use std::time::Duration;
+/// use thread_timer::ThreadTimer;
+///
+/// let (sender, receiver) = mpsc::channel::<bool>();
+/// let timer = ThreadTimer::new();
+///
+/// timer.start(Duration::from_millis(50), move || { sender.send(true).unwrap() }).unwrap();
+///
+/// thread::sleep(Duration::from_millis(60));
+/// assert_eq!(receiver.try_recv(), Ok(true));
+/// ```
 pub struct ThreadTimer {
     // Allow only one operation at a time so that we don't need to worry about interleaving
     op_lock: Arc<Mutex<()>>,
@@ -42,6 +66,11 @@ pub struct ThreadTimer {
 impl ThreadTimer {
     /// Creates and returns a new ThreadTimer. Spawns a new thread to do the
     /// waiting (the "wait thread").
+    ///
+    /// ```
+    /// use thread_timer::ThreadTimer;
+    /// let timer = ThreadTimer::new();
+    /// ```
     pub fn new() -> Self {
 	let (sender, receiver) = mpsc::channel::<StartWaitMessage>();
 	let is_waiting = Arc::new(Mutex::new(false));
@@ -87,6 +116,29 @@ impl ThreadTimer {
     /// execute `f` if the timer is canceled before `dur` elapses.
     /// Returns [TimerStartError](enum.TimerStartError.html)::AlreadyWaiting if
     /// the timer is already waiting to execute a thunk.
+    /// ```
+    /// use std::sync::mpsc::{self, TryRecvError};
+    /// use std::thread;
+    /// use std::time::Duration;
+    /// use thread_timer::ThreadTimer;
+    ///
+    /// let (sender, receiver) = mpsc::channel::<bool>();
+    /// let timer = ThreadTimer::new();
+    ///
+    /// timer.start(Duration::from_millis(50), move || { sender.send(true).unwrap() }).unwrap();
+    /// assert_eq!(
+    ///   receiver.try_recv(),
+    ///   Err(TryRecvError::Empty),
+    ///   "Received response before wait elapsed!",
+    /// );
+    ///
+    /// thread::sleep(Duration::from_millis(60));
+    /// assert_eq!(
+    ///   receiver.try_recv(),
+    ///   Ok(true),
+    ///   "Did not receive response after wait elapsed!",
+    /// );
+    /// ```
     pub fn start<F>(&self, dur: Duration, f: F) -> Result<(), TimerStartError>
     where F: FnOnce() + Send + 'static {
 	let _guard = self.op_lock.lock().unwrap();
@@ -107,6 +159,29 @@ impl ThreadTimer {
     /// will be able to start waiting to execute another thunk).
     /// Returns [TimerCancelError](enum.TimerCancelError.html)::NotWaiting if
     /// the timer is not currently waiting.
+    /// ```
+    /// use std::sync::mpsc::{self, TryRecvError};
+    /// use std::thread;
+    /// use std::time::Duration;
+    /// use thread_timer::ThreadTimer;
+    ///
+    /// let (sender, receiver) = mpsc::channel::<bool>();
+    /// let timer = ThreadTimer::new();
+    ///
+    /// timer.start(Duration::from_millis(50), move || { sender.send(true).unwrap() }).unwrap();
+    ///
+    /// // Make sure the wait has actually started before we cancel
+    /// thread::sleep(Duration::from_millis(10));
+    /// timer.cancel().unwrap();
+    ///
+    /// thread::sleep(Duration::from_millis(60));
+    /// assert_eq!(
+    ///   receiver.try_recv(),
+    ///   // When the wait is canceled, the thunk and its Sender will be dropped
+    ///   Err(TryRecvError::Disconnected),
+    ///   "Received response from canceled wait!",
+    /// );
+    /// ```
     pub fn cancel(&self) -> Result<(), TimerCancelError> {
 	let _guard = self.op_lock.lock().unwrap();
 	let is_waiting = self.is_waiting.lock().unwrap();
