@@ -3,5 +3,12 @@ name = "thread_timer"
 version = "0.1.0"
 authors = ["GregOwen <greowen@gmail.com>"]
 edition = "2018"
+description = "A simple, cancelable timer with no external dependencies"
+license = "MIT"
+homepage = "https://github.com/GregOwen/thread-timer"
+repository = "https://github.com/GregOwen/thread-timer"
+readme = "README.md"
+keywords = ["timer", "timeout", "delay", "cancel"]
+categories = ["asynchronous", "concurrency"]
 
 [dependencies]
