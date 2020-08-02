@@ -2,7 +2,7 @@ use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
-use timer::*;
+use thread_timer::*;
 
 fn get_test_thunk(sender: &Sender<bool>) -> impl FnOnce() + Send + 'static {
     let sender_clone = sender.clone();
