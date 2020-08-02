@@ -99,29 +99,26 @@ impl ThreadTimer {
 	let thread_is_canceled = is_canceled.clone();
 
 	thread::spawn(move || {
-	    loop {
-		match receiver.recv() {
-		    Ok(msg) => {
-			let (cancel_lock, cancel_condvar) = &*thread_is_canceled;
-			let (mut cancel_guard, cancel_res) = cancel_condvar.wait_timeout_while(
-			    cancel_lock.lock().unwrap(),
-			    msg.dur,
-			    |&mut is_canceled| !is_canceled,
-			).unwrap();
-			if cancel_res.timed_out() {
-			    // Only run the thunk if the wait completed (i.e. it
-			    // was not canceled)
-			    (msg.f)();
-			}
-			// Always clear the cancel guard (even if the wait
-			// completed and we executed the thunk)
-			*cancel_guard = false;
-			*thread_is_waiting.lock().unwrap() = false;
-		    },
-		    // If the sender has disconnected, break out of the loop
-		    Err(_) => break,
+	    // Loop waiting for a new message from the client thread(s).  If all
+	    // senders have disconnected, we will never receive a new message so
+	    // we should break out of the loop.
+	    while let Ok(msg) = receiver.recv() {
+		let (cancel_lock, cancel_condvar) = &*thread_is_canceled;
+		let (mut cancel_guard, cancel_res) = cancel_condvar.wait_timeout_while(
+		    cancel_lock.lock().unwrap(),
+		    msg.dur,
+		    |&mut is_canceled| !is_canceled,
+		).unwrap();
+		if cancel_res.timed_out() {
+		    // Only run the thunk if the wait completed (i.e. it
+		    // was not canceled)
+		    (msg.f)();
 		}
-	    }
+		// Always clear the cancel guard (even if the wait
+		// completed and we executed the thunk)
+		*cancel_guard = false;
+		*thread_is_waiting.lock().unwrap() = false;
+	    };
 	});
 
 	ThreadTimer {
