@@ -36,8 +36,6 @@ struct StartWaitMessage {
 /// only one wait thread, each ThreadTimer may only be waiting for a single
 /// thunk at a time.
 ///
-/// If a ThreadTimer is currently waiting to execute a thunk, the wait can be
-/// canceled, in which case the thunk will not be run.
 /// ```
 /// use std::sync::mpsc::{self, TryRecvError};
 /// use std::thread;
@@ -51,6 +49,27 @@ struct StartWaitMessage {
 ///
 /// thread::sleep(Duration::from_millis(60));
 /// assert_eq!(receiver.try_recv(), Ok(true));
+/// ```
+///
+/// If a ThreadTimer is currently waiting to execute a thunk, the wait can be
+/// canceled, in which case the thunk will not be run.
+///
+/// ```
+/// use std::sync::mpsc::{self, TryRecvError};
+/// use std::thread;
+/// use std::time::Duration;
+/// use thread_timer::ThreadTimer;
+///
+/// let (sender, receiver) = mpsc::channel::<bool>();
+/// let timer = ThreadTimer::new();
+///
+/// timer.start(Duration::from_millis(50), move || { sender.send(true).unwrap() }).unwrap();
+///
+/// thread::sleep(Duration::from_millis(10));
+/// timer.cancel().unwrap();
+///
+/// thread::sleep(Duration::from_millis(60));
+/// assert_eq!(receiver.try_recv(), Err(TryRecvError::Disconnected));
 /// ```
 pub struct ThreadTimer {
     // Allow only one operation at a time so that we don't need to worry about interleaving
