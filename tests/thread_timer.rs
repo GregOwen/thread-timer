@@ -84,3 +84,17 @@ fn can_start_cancel_start() {
   thread::sleep(Duration::from_millis(60));
   assert_eq!(receiver.try_recv(), Ok(true))
 }
+
+#[test]
+fn can_start_immediately_after_cancel() {
+  let timer = ThreadTimer::new();
+  let (sender, receiver) = mpsc::channel();
+  let f1 = get_test_thunk(&sender);
+  let f2 = get_test_thunk(&sender);
+  assert_eq!(timer.start(Duration::from_millis(50), f1), Ok(()));
+  thread::sleep(Duration::from_millis(10));
+  assert_eq!(timer.cancel(), Ok(()));
+  assert_eq!(timer.start(Duration::from_millis(50), f2), Ok(()));
+  thread::sleep(Duration::from_millis(60));
+  assert_eq!(receiver.try_recv(), Ok(true))
+}
