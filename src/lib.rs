@@ -75,8 +75,8 @@ struct StartWaitMessage {
 pub struct ThreadTimer {
   // Allow only one operation at a time so that we don't need to worry about interleaving
   op_lock: Arc<Mutex<()>>,
-  // Record whether or not the timer is currently waiting
-  is_waiting: Arc<Mutex<bool>>,
+  // Used to track whether or not the timer is currently waiting
+  is_waiting: Arc<(Mutex<bool>, Condvar)>,
   // Used to wait for a cancelation signal and avoid spurious wakeups while waiting
   is_canceled: Arc<(Mutex<bool>, Condvar)>,
   // Used to tell the timer thread to start waiting
@@ -93,7 +93,7 @@ impl ThreadTimer {
   /// ```
   pub fn new() -> Self {
     let (sender, receiver) = mpsc::channel::<StartWaitMessage>();
-    let is_waiting = Arc::new(Mutex::new(false));
+    let is_waiting = Arc::new((Mutex::new(false), Condvar::new()));
     let thread_is_waiting = is_waiting.clone();
     let is_canceled = Arc::new((Mutex::new(false), Condvar::new()));
     let thread_is_canceled = is_canceled.clone();
@@ -112,14 +112,15 @@ impl ThreadTimer {
           )
           .unwrap();
         if cancel_res.timed_out() {
-          // Only run the thunk if the wait completed (i.e. it
-          // was not canceled)
+          // Only run the thunk if the wait completed (i.e. it was not canceled)
           (msg.f)();
         }
-        // Always clear the cancel guard (even if the wait
-        // completed and we executed the thunk)
+        // Always clear the cancel guard (even if the wait completed and we
+        // executed the thunk)
         *cancel_guard = false;
-        *thread_is_waiting.lock().unwrap() = false;
+        let (is_waiting_lock, is_waiting_condvar) = &*thread_is_waiting;
+        *is_waiting_lock.lock().unwrap() = false;
+        is_waiting_condvar.notify_one();
       }
     });
 
@@ -163,7 +164,8 @@ impl ThreadTimer {
     F: FnOnce() + Send + 'static,
   {
     let _guard = self.op_lock.lock().unwrap();
-    let mut is_waiting = self.is_waiting.lock().unwrap();
+    let (is_waiting_lock, _) = &*self.is_waiting;
+    let mut is_waiting = is_waiting_lock.lock().unwrap();
     if *is_waiting {
       return Err(TimerStartError::AlreadyWaiting);
     }
@@ -177,7 +179,10 @@ impl ThreadTimer {
   }
 
   /// Cancel the current timer (the thunk will not be executed and the timer
-  /// will be able to start waiting to execute another thunk).
+  /// will be able to start waiting to execute another thunk). This function
+  /// waits until the wait thread has confirmed that it is ready to start
+  /// waiting again, so it is safe to call start immediately after calling this
+  /// function.
   /// Returns [TimerCancelError](enum.TimerCancelError.html)::NotWaiting if
   /// the timer is not currently waiting.
   /// ```
@@ -205,8 +210,8 @@ impl ThreadTimer {
   /// ```
   pub fn cancel(&self) -> Result<(), TimerCancelError> {
     let _guard = self.op_lock.lock().unwrap();
-    let is_waiting = self.is_waiting.lock().unwrap();
-    if !*is_waiting {
+    let (is_waiting_lock, is_waiting_condvar) = &*self.is_waiting;
+    if !*is_waiting_lock.lock().unwrap() {
       return Err(TimerCancelError::NotWaiting);
     }
 
@@ -223,8 +228,20 @@ impl ThreadTimer {
       Ok(mut cancel_guard) => {
         *cancel_guard = true;
         cancel_condvar.notify_one();
-        // We do not clear the cancel or waiting flags here since those
-        // are cleared in the wait thread
+        // Let go of the cancel lock so that the wait thread can acquire it
+        // (this is necessary for the wait thread's call to
+        // cancel_condvar.wait_timeout_while() to terminate). If this thread is
+        // still holding the cancel lock when it starts to wait on the
+        // is_waiting_condvar, we'll hit a deadlock.
+        drop(cancel_guard);
+        // Wait until the wait thread acknowledges the cancellation (this allows
+        // a client to call start() immediately after cancel() without worrying
+        // about a race condition)
+        let _ = is_waiting_condvar
+          .wait_while(is_waiting_lock.lock().unwrap(), |&mut is_waiting| {
+            is_waiting
+          })
+          .unwrap();
         Ok(())
       }
       // The wait thread holds the cancel lock, so return an error

@@ -62,7 +62,9 @@ fn does_not_deadlock_when_canceling_long_task() {
   let (sender, _) = mpsc::channel();
   let f = move || {
     thread::sleep(Duration::from_secs(10));
-    sender.send(true).unwrap();
+    // This send should fail because this thunk will only be run after the test
+    // has been completed and the receiver dropped
+    sender.send(true).unwrap_err();
   };
   assert_eq!(timer.start(Duration::from_millis(10), f), Ok(()));
   thread::sleep(Duration::from_millis(20));
